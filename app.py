@@ -353,7 +353,14 @@ with tab1:
             with st.form("inline_visit_form"):
                 return_bill = st.text_input("Bill Number (Optional)", placeholder="e.g. B-102", key="inline_return_bill")
                 return_date = st.date_input("Coating Date*", value=datetime.today(), key="inline_return_date")
-                return_amount = st.number_input("Payment Amount (₹)*", min_value=0.0, value=0.0, step=50.0, key="inline_return_amount")
+                return_amount_str = st.selectbox(
+                    "Payment Amount (₹)*",
+                    options=["0", "450", "550"],
+                    index=0,
+                    placeholder="Select or type amount...",
+                    accept_new_options=True,
+                    key="inline_return_amount_sel"
+                )
                 
                 col_save, col_cancel = st.columns(2)
                 with col_save:
@@ -361,6 +368,10 @@ with tab1:
                     if save_visit:
                         formatted_return_date = return_date.strftime("%Y-%m-%d")
                         bill_no_val = return_bill.strip() if return_bill.strip() else None
+                        try:
+                            return_amount = float(return_amount_str)
+                        except ValueError:
+                            return_amount = 0.0
                         status_val = "Paid" if return_amount > 0.0 else "Pending"
                         success, msg = db.add_visit(
                             visit_cust_id,
@@ -430,7 +441,12 @@ with tab1:
     with search_col2:
         sort_by = st.selectbox(
             "Sort by", 
-            ["Name (A-Z)", "Name (Z-A)", "Vehicle Number (A-Z)", "Vehicle Number (Z-A)", "Free Buffing Date (Newest First)", "Free Buffing Date (Oldest First)"]
+            [
+                "Name (A-Z)", "Name (Z-A)", 
+                "Vehicle Number (A-Z)", "Vehicle Number (Z-A)", 
+                "Bill Number (A-Z)", "Bill Number (Z-A)", 
+                "Free Buffing Date (Newest First)", "Free Buffing Date (Oldest First)"
+            ]
         )
     
     # Filter and Sort Data
@@ -454,6 +470,10 @@ with tab1:
             filtered_df = filtered_df.sort_values(by="Vehicle Number", ascending=True)
         elif sort_by == "Vehicle Number (Z-A)":
             filtered_df = filtered_df.sort_values(by="Vehicle Number", ascending=False)
+        elif sort_by == "Bill Number (A-Z)":
+            filtered_df = filtered_df.sort_values(by="Bill Number(s)", ascending=True)
+        elif sort_by == "Bill Number (Z-A)":
+            filtered_df = filtered_df.sort_values(by="Bill Number(s)", ascending=False)
         elif sort_by == "Free Buffing Date (Newest First)":
             filtered_df = filtered_df.sort_values(by="Buffing DateSort", ascending=False)
         elif sort_by == "Free Buffing Date (Oldest First)":
@@ -584,7 +604,14 @@ with tab2:
         # Payment details
         st.markdown("### 💳 Initial Payment Details")
         bill_number = st.text_input("Bill Number (Optional)", placeholder="e.g. B-101")
-        payment_amount = st.number_input("Payment Amount (₹)*", min_value=0.0, value=0.0, step=50.0)
+        payment_amount_str = st.selectbox(
+            "Payment Amount (₹)*",
+            options=["0", "450", "550"],
+            index=0,
+            placeholder="Select or type amount...",
+            accept_new_options=True,
+            key="add_cust_payment_amount"
+        )
         
         # Coating date
         coating_date = st.date_input("Coating Date*", value=datetime.today())
@@ -608,6 +635,10 @@ with tab2:
                 formatted_date = coating_date.strftime("%Y-%m-%d")
                 cust_name_val = name.strip() if name.strip() else None
                 bill_no_val = bill_number.strip() if bill_number.strip() else None
+                try:
+                    payment_amount = float(payment_amount_str)
+                except ValueError:
+                    payment_amount = 0.0
                 status_val = "Paid" if payment_amount > 0.0 else "Pending"
                 success, msg = db.add_customer(
                     cust_name_val, 
@@ -656,13 +687,24 @@ with tab3:
                 # Input visit details
                 return_bill = st.text_input("Bill Number (Optional)", placeholder="e.g. B-102")
                 return_date = st.date_input("Coating Date*", value=datetime.today())
-                return_amount = st.number_input("Payment Amount (₹)*", min_value=0.0, value=0.0, step=50.0)
+                return_amount_str = st.selectbox(
+                    "Payment Amount (₹)*",
+                    options=["0", "450", "550"],
+                    index=0,
+                    placeholder="Select or type amount...",
+                    accept_new_options=True,
+                    key="return_visit_payment_amount"
+                )
                 st.markdown("*Required fields")
                 visit_submit = st.form_submit_button("Log Return Visit", use_container_width=True)
                 
                 if visit_submit:
                     formatted_return_date = return_date.strftime("%Y-%m-%d")
                     bill_no_val = return_bill.strip() if return_bill.strip() else None
+                    try:
+                        return_amount = float(return_amount_str)
+                    except ValueError:
+                        return_amount = 0.0
                     status_val = "Paid" if return_amount > 0.0 else "Pending"
                     success, msg = db.add_visit(
                         cust_id,
@@ -824,7 +866,21 @@ with tab4:
                         
                     edit_v_bill = st.text_input("Edit Bill Number", value=selected_visit["Bill Number"] if selected_visit["Bill Number"] else "", key=f"edit_v_bill_{v_id}")
                     edit_v_date = st.date_input("Edit Coating Date", value=v_date, key=f"edit_v_date_{v_id}")
-                    edit_v_amount = st.number_input("Edit Visit Amount (₹)", min_value=0.0, value=float(selected_visit["Amount (₹)"]), step=50.0, key=f"edit_v_amount_{v_id}")
+                    curr_val_raw = float(selected_visit["Amount (₹)"])
+                    curr_val_str = str(int(curr_val_raw)) if curr_val_raw.is_integer() else f"{curr_val_raw:.2f}"
+                    
+                    options_edit = ["0", "450", "550"]
+                    if curr_val_str not in options_edit:
+                        options_edit.append(curr_val_str)
+                        
+                    edit_v_amount_str = st.selectbox(
+                        "Edit Visit Amount (₹)",
+                        options=options_edit,
+                        index=options_edit.index(curr_val_str),
+                        placeholder="Select or type amount...",
+                        accept_new_options=True,
+                        key=f"edit_v_amount_sel_{v_id}"
+                    )
                     
                     v_btn_col1, v_btn_col2 = st.columns(2)
                     with v_btn_col1:
@@ -832,6 +888,10 @@ with tab4:
                         if save_visit:
                             formatted_v_date = edit_v_date.strftime("%Y-%m-%d")
                             bill_no_val = edit_v_bill.strip() if edit_v_bill.strip() else None
+                            try:
+                                edit_v_amount = float(edit_v_amount_str)
+                            except ValueError:
+                                edit_v_amount = 0.0
                             status_val = "Paid" if edit_v_amount > 0.0 else "Pending"
                             success, msg = db.update_visit(v_id, formatted_v_date, edit_v_amount, status_val, bill_no_val)
                             if success:

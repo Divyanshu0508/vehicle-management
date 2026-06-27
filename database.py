@@ -10,48 +10,245 @@ def hash_password(password):
     salted = password + SALT
     return hashlib.sha256(salted.encode('utf-8')).hexdigest()
 
+import os
+import streamlit as st
+
+def is_postgres_configured():
+    try:
+        # Check streamlit secrets
+        if hasattr(st, "secrets") and "DATABASE_URL" in st.secrets:
+            return True
+    except Exception:
+        pass
+    # Check environment variables
+    if "DATABASE_URL" in os.environ:
+        return True
+    return False
+
+def get_db_url():
+    try:
+        if hasattr(st, "secrets") and "DATABASE_URL" in st.secrets:
+            return st.secrets["DATABASE_URL"]
+    except Exception:
+        pass
+    return os.environ.get("DATABASE_URL")
+
+class DatabaseRow:
+    def __init__(self, data, colnames):
+        self._data = dict(data)
+        self._colnames = list(colnames)
+        self._row_list = [self._data.get(col) for col in self._colnames]
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self._row_list[key]
+        return self._data[key]
+
+    def get(self, key, default=None):
+        return self._data.get(key, default)
+
+    def keys(self):
+        return self._data.keys()
+
+    def values(self):
+        return self._data.values()
+
+    def items(self):
+        return self._data.items()
+
+    def __len__(self):
+        return len(self._data)
+
+    def __repr__(self):
+        return repr(self._data)
+
+class DatabaseCursor:
+    def __init__(self, cursor, is_postgres):
+        self.cursor = cursor
+        self.is_postgres = is_postgres
+        self.lastrowid = None
+
+    def execute(self, sql, params=None):
+        if params is None:
+            params = ()
+        
+        # Adapt placeholders
+        if self.is_postgres:
+            sql_adapted = sql.replace('?', '%s')
+            
+            # Handle lastrowid for INSERT
+            if sql_adapted.strip().upper().startswith("INSERT INTO"):
+                import re
+                table_match = re.search(r"insert\s+into\s+([a-zA-Z0-9_\"`]+)", sql_adapted, re.IGNORECASE)
+                table_name = table_match.group(1).strip('"`').lower() if table_match else ""
+                
+                if table_name != "users":
+                    is_returning = "RETURNING" in sql_adapted.upper()
+                    if not is_returning:
+                        sql_adapted = sql_adapted.rstrip('; ')
+                        sql_adapted += " RETURNING id"
+                    
+                    self.cursor.execute(sql_adapted, params)
+                    res = self.cursor.fetchone()
+                    if res:
+                        if isinstance(res, dict):
+                            self.lastrowid = res.get('id')
+                        elif isinstance(res, (list, tuple)):
+                            self.lastrowid = res[0]
+                        else:
+                            self.lastrowid = res
+                    return self
+            
+            self.cursor.execute(sql_adapted, params)
+        else:
+            self.cursor.execute(sql, params)
+            self.lastrowid = self.cursor.lastrowid
+        return self
+
+    def fetchone(self):
+        row = self.cursor.fetchone()
+        if row is None:
+            return None
+        
+        if self.is_postgres:
+            colnames = [desc[0] for desc in self.cursor.description]
+            if hasattr(row, 'keys') or isinstance(row, dict):
+                return DatabaseRow(row, colnames)
+            return DatabaseRow(zip(colnames, row), colnames)
+        else:
+            colnames = row.keys()
+            return DatabaseRow(dict(row), colnames)
+
+    def fetchall(self):
+        rows = self.cursor.fetchall()
+        if not rows:
+            return []
+        
+        results = []
+        for r in rows:
+            if self.is_postgres:
+                colnames = [desc[0] for desc in self.cursor.description]
+                if hasattr(r, 'keys') or isinstance(r, dict):
+                    results.append(DatabaseRow(r, colnames))
+                else:
+                    results.append(DatabaseRow(zip(colnames, r), colnames))
+            else:
+                colnames = r.keys()
+                results.append(DatabaseRow(dict(r), colnames))
+        return results
+
+    def close(self):
+        self.cursor.close()
+
+class DatabaseConnection:
+    def __init__(self, conn, is_postgres):
+        self.conn = conn
+        self.is_postgres = is_postgres
+
+    def cursor(self):
+        if self.is_postgres:
+            import psycopg2.extras
+            return DatabaseCursor(self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor), is_postgres=True)
+        else:
+            return DatabaseCursor(self.conn.cursor(), is_postgres=False)
+
+    def commit(self):
+        self.conn.commit()
+
+    def rollback(self):
+        self.conn.rollback()
+
+    def close(self):
+        self.conn.close()
+
+    def execute(self, sql, *args, **kwargs):
+        if self.is_postgres:
+            if "PRAGMA" in sql.upper():
+                return
+            cursor = self.cursor()
+            cursor.execute(sql, *args, **kwargs)
+            return cursor
+        else:
+            return self.conn.execute(sql, *args, **kwargs)
+
+try:
+    import psycopg2
+    DB_INTEGRITY_ERRORS = (sqlite3.IntegrityError, psycopg2.IntegrityError)
+except ImportError:
+    DB_INTEGRITY_ERRORS = (sqlite3.IntegrityError,)
+
 def get_db_connection():
-    conn = sqlite3.connect(DB_NAME)
-    conn.execute("PRAGMA foreign_keys = ON;")
-    conn.row_factory = sqlite3.Row
-    return conn
+    if is_postgres_configured():
+        import psycopg2
+        db_url = get_db_url()
+        conn = psycopg2.connect(db_url)
+        return DatabaseConnection(conn, is_postgres=True)
+    else:
+        conn = sqlite3.connect(DB_NAME)
+        conn.execute("PRAGMA foreign_keys = ON;")
+        conn.row_factory = sqlite3.Row
+        return DatabaseConnection(conn, is_postgres=False)
 
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
-    # Create customers table (Profile Info)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS customers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            customer_name TEXT,
-            vehicle_number TEXT UNIQUE NOT NULL,
-            vehicle_model TEXT NOT NULL,
-            vehicle_color TEXT NOT NULL
-        )
-    """)
-    # Create service_records table (Visits Info)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS service_records (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            customer_id INTEGER NOT NULL,
-            coating_date TEXT NOT NULL,
-            payment_amount REAL NOT NULL DEFAULT 0.0,
-            payment_status TEXT NOT NULL DEFAULT 'Pending',
-            bill_number TEXT,
-            FOREIGN KEY (customer_id) REFERENCES customers (id) ON DELETE CASCADE
-        )
-    """)
-    # Create users table (Auth Info)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            username TEXT PRIMARY KEY,
-            password_hash TEXT NOT NULL,
-            role TEXT NOT NULL DEFAULT 'Staff'
-        )
-    """)
+    if conn.is_postgres:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS customers (
+                id SERIAL PRIMARY KEY,
+                customer_name TEXT,
+                vehicle_number TEXT UNIQUE NOT NULL,
+                vehicle_model TEXT NOT NULL,
+                vehicle_color TEXT NOT NULL
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS service_records (
+                id SERIAL PRIMARY KEY,
+                customer_id INTEGER NOT NULL REFERENCES customers (id) ON DELETE CASCADE,
+                coating_date TEXT NOT NULL,
+                payment_amount REAL NOT NULL DEFAULT 0.0,
+                payment_status TEXT NOT NULL DEFAULT 'Pending',
+                bill_number TEXT
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                username TEXT PRIMARY KEY,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'Staff'
+            )
+        """)
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS customers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                customer_name TEXT,
+                vehicle_number TEXT UNIQUE NOT NULL,
+                vehicle_model TEXT NOT NULL,
+                vehicle_color TEXT NOT NULL
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS service_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                customer_id INTEGER NOT NULL,
+                coating_date TEXT NOT NULL,
+                payment_amount REAL NOT NULL DEFAULT 0.0,
+                payment_status TEXT NOT NULL DEFAULT 'Pending',
+                bill_number TEXT,
+                FOREIGN KEY (customer_id) REFERENCES customers (id) ON DELETE CASCADE
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                username TEXT PRIMARY KEY,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'Staff'
+            )
+        """)
     conn.commit()
 
-    # Seed default user accounts if table is empty
     cursor.execute("SELECT COUNT(*) FROM users")
     if cursor.fetchone()[0] == 0:
         cursor.execute("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)", ("admin", hash_password("admin123"), "Admin"))
@@ -67,7 +264,7 @@ def add_user(username, password_hash, role):
         cursor.execute("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)", (username, password_hash, role))
         conn.commit()
         return True
-    except sqlite3.IntegrityError:
+    except DB_INTEGRITY_ERRORS:
         return False
     finally:
         conn.close()
@@ -102,7 +299,7 @@ def add_customer(customer_name, vehicle_number, vehicle_model, vehicle_color, co
         
         conn.commit()
         return True, "Customer added successfully."
-    except sqlite3.IntegrityError:
+    except DB_INTEGRITY_ERRORS:
         return False, f"Vehicle number '{vehicle_number}' is already registered."
     except Exception as e:
         return False, str(e)
@@ -197,7 +394,7 @@ def update_customer(customer_id, customer_name, vehicle_number, vehicle_model, v
         """, (customer_name, vehicle_number, vehicle_model, vehicle_color, customer_id))
         conn.commit()
         return True, "Customer profile details updated successfully."
-    except sqlite3.IntegrityError:
+    except DB_INTEGRITY_ERRORS:
         return False, f"Vehicle number '{vehicle_number}' is already registered by another customer."
     except Exception as e:
         return False, str(e)
